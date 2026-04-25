@@ -1,12 +1,236 @@
 #include "filedownloader.h"
 
+#include <QDir>
+#include <QFileInfo>
+#include <QNetworkRequest>
+#include <QRegularExpression>
+#include <QUrl>
+
 FileDownloader::FileDownloader(QObject *parent)
     : QObject{parent}
 {
-
+    mRetryTimer.setSingleShot(true);
+    connect(&mRetryTimer, &QTimer::timeout, this, &FileDownloader::startOrResume);
 }
 
-void FileDownloader::download(QString &url, QString &outPutFolder)
+void FileDownloader::download(const QString& url, const QString& outPutFolder)
 {
-
+    mUrl = url.trimmed();
+    mOutputFolder = outPutFolder.trimmed();
+    resetStateForNewDownload();
+    startOrResume();
 }
+
+void FileDownloader::resetStateForNewDownload()
+{
+    cleanupReply();
+    if (mFile) {
+        if (mFile->isOpen()) mFile->close();
+        delete mFile;
+        mFile = nullptr;
+    }
+
+    mFinalPath = targetFilePath();
+    mPartPath = partFilePath();
+
+    mResumeOffset = 0;
+    mTotalExpectedBytes = -1;
+    mRetryCount = 0;
+    mTriedRestartWithoutRange = false;
+}
+
+QString FileDownloader::derivedFileName() const
+{
+    QUrl qurl(mUrl);
+    QString name = QFileInfo(qurl.path()).fileName();
+    if (name.isEmpty()) name = "download.bin";
+    return name;
+}
+
+QString FileDownloader::targetFilePath() const
+{
+    QDir dir(mOutputFolder);
+    return dir.filePath(derivedFileName());
+}
+
+QString FileDownloader::partFilePath() const
+{
+    return targetFilePath() + ".part";
+}
+
+qint64 FileDownloader::existingPartSize() const
+{
+    QFileInfo fi(mPartPath);
+    if (!fi.exists()) return 0;
+    return fi.size();
+}
+
+void FileDownloader::cleanupReply()
+{
+    if (!mReply) return;
+    mReply->disconnect(this);
+    mReply->abort();
+    mReply->deleteLater();
+    mReply = nullptr;
+}
+
+void FileDownloader::scheduleRetry(const QString& reason)
+{
+    cleanupReply();
+    if (mFile && mFile->isOpen()) mFile->flush();
+
+    const int capped = qMin(mRetryCount, 6);
+    const int delayMs = 1000 * (1 << capped); // 1s,2s,4s..64s
+    mRetryCount++;
+
+    emit onError(QString("%1. Retrying in %2s...").arg(reason).arg(delayMs / 1000));
+    mRetryTimer.start(delayMs);
+}
+
+void FileDownloader::startOrResume()
+{
+    if (mUrl.isEmpty()) {
+        emit onError("URL is empty.");
+        return;
+    }
+    if (mOutputFolder.isEmpty()) {
+        emit onError("Output folder is empty.");
+        return;
+    }
+
+    QDir outDir(mOutputFolder);
+    if (!outDir.exists() && !outDir.mkpath(".")) {
+        emit onError("Cannot create output folder.");
+        return;
+    }
+
+    mFinalPath = targetFilePath();
+    mPartPath = partFilePath();
+
+    mResumeOffset = existingPartSize();
+
+    if (!mFile) mFile = new QFile(mPartPath);
+    if (!mFile->open(QIODevice::ReadWrite)) {
+        emit onError("Cannot open output file for writing.");
+        return;
+    }
+    if (!mFile->seek(mResumeOffset)) {
+        emit onError("Cannot seek output file.");
+        return;
+    }
+
+    // Avoid MSVC "most vexing parse" (treating this as a function declaration)
+    QNetworkRequest req{QUrl(mUrl)};
+    // Qt5/Qt6 compatible redirect handling
+    req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+
+    if (mResumeOffset > 0 && !mTriedRestartWithoutRange) {
+        req.setRawHeader("Range", QByteArray("bytes=") + QByteArray::number(mResumeOffset) + "-");
+    }
+
+    cleanupReply();
+    mReply = mNam.get(req);
+
+    connect(mReply, &QNetworkReply::readyRead, this, [this]() {
+        if (!mReply || !mFile) return;
+        const QByteArray chunk = mReply->readAll();
+        if (!chunk.isEmpty()) {
+            const qint64 written = mFile->write(chunk);
+            if (written != chunk.size()) {
+                scheduleRetry("Disk write failed");
+            }
+        }
+    });
+
+    connect(mReply, &QNetworkReply::downloadProgress, this, [this](qint64 received, qint64 total) {
+        // received/total are for the current reply; adjust with resume offset if resuming
+        qint64 fullTotal = -1;
+        if (total > 0) fullTotal = mResumeOffset + total;
+        if (mTotalExpectedBytes > 0) fullTotal = mTotalExpectedBytes;
+
+        if (fullTotal > 0) {
+            const qint64 fullReceived = mResumeOffset + received;
+            const float pct = (fullReceived * 100.0f) / (float)fullTotal;
+            emit onProgressChanged(pct);
+        }
+    });
+
+    connect(mReply, &QNetworkReply::errorOccurred, this, [this](QNetworkReply::NetworkError) {
+        if (!mReply) return;
+        scheduleRetry(mReply->errorString());
+    });
+
+    connect(mReply, &QNetworkReply::finished, this, [this]() {
+        if (!mReply || !mFile) return;
+
+        // Ensure last bytes are written.
+        const QByteArray chunk = mReply->readAll();
+        if (!chunk.isEmpty()) mFile->write(chunk);
+        mFile->flush();
+
+        const QVariant statusV = mReply->attribute(QNetworkRequest::HttpStatusCodeAttribute);
+        const int status = statusV.isValid() ? statusV.toInt() : 0;
+
+        // If file is already fully downloaded, some servers respond with 416 on Range requests.
+        if (status == 416 && mResumeOffset > 0) {
+            mFile->close();
+            QFile::remove(mFinalPath);
+            if (QFile::rename(mPartPath, mFinalPath)) {
+                emit onProgressChanged(100.0f);
+                emit onDownloadCompleted();
+            } else {
+                emit onError("Download appears complete (416), but could not rename .part file.");
+            }
+            cleanupReply();
+            return;
+        }
+
+        // Detect server ignoring Range (status 200 when we requested resume).
+        if (mResumeOffset > 0 && !mTriedRestartWithoutRange && status == 200) {
+            // Server didn't resume; restart cleanly.
+            mTriedRestartWithoutRange = true;
+            mFile->close();
+            mFile->open(QIODevice::WriteOnly | QIODevice::Truncate);
+            mFile->close();
+            emit onError("Server does not support resume; restarting download from beginning.");
+            mRetryCount = 0;
+            startOrResume();
+            return;
+        }
+
+        if (mReply->error() != QNetworkReply::NoError) {
+            // errorOccurred already scheduled retry; just return
+            cleanupReply();
+            return;
+        }
+
+        // If Content-Range exists, parse total size.
+        const QByteArray contentRange = mReply->rawHeader("Content-Range"); // e.g. bytes 100-199/1000
+        if (!contentRange.isEmpty()) {
+            QRegularExpression re(R"(bytes\s+(\d+)-(\d+)/(\d+|\*))");
+            const auto m = re.match(QString::fromLatin1(contentRange));
+            if (m.hasMatch() && m.captured(3) != "*") {
+                mTotalExpectedBytes = m.captured(3).toLongLong();
+            }
+        } else {
+            const qint64 len = mReply->header(QNetworkRequest::ContentLengthHeader).toLongLong();
+            if (len > 0 && status == 200) mTotalExpectedBytes = len;
+            if (len > 0 && status == 206) mTotalExpectedBytes = mResumeOffset + len;
+        }
+
+        mFile->close();
+
+        // Move .part to final.
+        QFile::remove(mFinalPath); // overwrite if exists
+        if (!QFile::rename(mPartPath, mFinalPath)) {
+            emit onError("Download finished but could not rename .part file.");
+            cleanupReply();
+            return;
+        }
+
+        emit onProgressChanged(100.0f);
+        emit onDownloadCompleted();
+        cleanupReply();
+    });
+}
+
