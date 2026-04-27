@@ -69,7 +69,10 @@ void FileDownloader::cleanupReply()
 {
     if (!mReply) return;
     mReply->disconnect(this);
-    mReply->abort();
+    // Avoid aborting a reply that already finished/errored, which can trigger
+    // Qt internal warnings on some versions/platforms.
+    if (mReply->isRunning())
+        mReply->abort();
     mReply->deleteLater();
     mReply = nullptr;
 }
@@ -77,7 +80,12 @@ void FileDownloader::cleanupReply()
 void FileDownloader::scheduleRetry(const QString& reason)
 {
     cleanupReply();
-    if (mFile && mFile->isOpen()) mFile->flush();
+    // Close the output file between attempts so the next retry can reopen cleanly
+    // and so we don't keep a stale handle around after network errors.
+    if (mFile && mFile->isOpen()) {
+        mFile->flush();
+        mFile->close();
+    }
 
     const int capped = qMin(mRetryCount, 6);
     const int delayMs = 1000 * (1 << capped); // 1s,2s,4s..64s
@@ -110,12 +118,24 @@ void FileDownloader::startOrResume()
     mResumeOffset = existingPartSize();
 
     if (!mFile) mFile = new QFile(mPartPath);
+    if (mFile->isOpen())
+        mFile->close();
     if (!mFile->open(QIODevice::ReadWrite)) {
-        mFileDownloadEvents-> onError("Cannot open output file for writing.");
+        const QString detail = mFile ? mFile->errorString() : QString("unknown error");
+        // If this failure is transient (e.g., folder temporarily unavailable), keep retrying.
+        // Also reset the QFile so the next attempt re-creates it cleanly.
+        if (mFile) {
+            if (mFile->isOpen()) mFile->close();
+            delete mFile;
+            mFile = nullptr;
+        }
+        scheduleRetry(QString("Cannot open output file for writing (%1)").arg(detail));
         return;
     }
     if (!mFile->seek(mResumeOffset)) {
-        mFileDownloadEvents-> onError("Cannot seek output file.");
+        const QString detail = mFile ? mFile->errorString() : QString("unknown error");
+        // Treat as potentially transient (file system hiccup) and retry.
+        scheduleRetry(QString("Cannot seek output file (%1)").arg(detail));
         return;
     }
 
