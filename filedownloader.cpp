@@ -197,7 +197,7 @@ void FileDownloader::startOrResume()
             QFile::remove(mFinalPath);
             if (QFile::rename(mPartPath, mFinalPath)) {
                 mFileDownloadEvents-> onProgressChanged(100.0f);
-                mFileDownloadEvents-> onDownloadCompleted();
+                mFileDownloadEvents-> onDownloadCompleted(mFinalPath);
             } else {
                 mFileDownloadEvents-> onError("Download appears complete (416), but could not rename .part file.");
             }
@@ -249,7 +249,7 @@ void FileDownloader::startOrResume()
         }
 
         mFileDownloadEvents-> onProgressChanged(100.0f);
-        mFileDownloadEvents-> onDownloadCompleted();
+        mFileDownloadEvents-> onDownloadCompleted(mFinalPath);
         cleanupReply();
     });
 }

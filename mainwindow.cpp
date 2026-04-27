@@ -20,9 +20,10 @@ MainWindow::~MainWindow()
     delete ui;
 }
 
-void MainWindow::onDownloadCompleted()
+void MainWindow::onDownloadCompleted(const QString& outputFilePath)
 {
-    ui->statusbar->showMessage("Download completed.");
+    ui->statusbar->showMessage(QStringLiteral("Download completed: %1").arg(outputFilePath));
+    QFile::remove(outputFilePath);
 }
 
 void MainWindow::onProgressChanged(float progress)

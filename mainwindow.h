@@ -15,7 +15,7 @@ public:
     MainWindow(QWidget *parent = nullptr);
     ~MainWindow();
 public:
-    void onDownloadCompleted() override;
+    void onDownloadCompleted(const QString& outputFilePath) override;
     void onProgressChanged(float progress) override;
     void onError(const QString & error) override;
 

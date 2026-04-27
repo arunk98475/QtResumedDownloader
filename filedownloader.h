@@ -12,7 +12,7 @@ class FileDownloadEvents
 {
 public:
     virtual void onProgressChanged(float val)=0;
-    virtual void onDownloadCompleted()=0;
+    virtual void onDownloadCompleted(const QString& outputFilePath)=0;
     virtual void onError(const QString& error)=0;
 
 };
