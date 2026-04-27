@@ -6,8 +6,8 @@
 #include <QRegularExpression>
 #include <QUrl>
 
-FileDownloader::FileDownloader(QObject *parent)
-    : QObject{parent}
+FileDownloader::FileDownloader(QObject *parent,FileDownloadEvents * events)
+    : QObject{parent},mFileDownloadEvents(events)
 {
     mRetryTimer.setSingleShot(true);
     connect(&mRetryTimer, &QTimer::timeout, this, &FileDownloader::startOrResume);
@@ -83,24 +83,24 @@ void FileDownloader::scheduleRetry(const QString& reason)
     const int delayMs = 1000 * (1 << capped); // 1s,2s,4s..64s
     mRetryCount++;
 
-    emit onError(QString("%1. Retrying in %2s...").arg(reason).arg(delayMs / 1000));
+    mFileDownloadEvents->onError(QString("%1. Retrying in %2s...").arg(reason).arg(delayMs / 1000));
     mRetryTimer.start(delayMs);
 }
 
 void FileDownloader::startOrResume()
 {
     if (mUrl.isEmpty()) {
-        emit onError("URL is empty.");
+        mFileDownloadEvents-> onError("URL is empty.");
         return;
     }
     if (mOutputFolder.isEmpty()) {
-        emit onError("Output folder is empty.");
+        mFileDownloadEvents-> onError("Output folder is empty.");
         return;
     }
 
     QDir outDir(mOutputFolder);
     if (!outDir.exists() && !outDir.mkpath(".")) {
-        emit onError("Cannot create output folder.");
+        mFileDownloadEvents-> onError("Cannot create output folder.");
         return;
     }
 
@@ -111,11 +111,11 @@ void FileDownloader::startOrResume()
 
     if (!mFile) mFile = new QFile(mPartPath);
     if (!mFile->open(QIODevice::ReadWrite)) {
-        emit onError("Cannot open output file for writing.");
+        mFileDownloadEvents-> onError("Cannot open output file for writing.");
         return;
     }
     if (!mFile->seek(mResumeOffset)) {
-        emit onError("Cannot seek output file.");
+        mFileDownloadEvents-> onError("Cannot seek output file.");
         return;
     }
 
@@ -151,7 +151,7 @@ void FileDownloader::startOrResume()
         if (fullTotal > 0) {
             const qint64 fullReceived = mResumeOffset + received;
             const float pct = (fullReceived * 100.0f) / (float)fullTotal;
-            emit onProgressChanged(pct);
+            mFileDownloadEvents-> onProgressChanged(pct);
         }
     });
 
@@ -176,10 +176,10 @@ void FileDownloader::startOrResume()
             mFile->close();
             QFile::remove(mFinalPath);
             if (QFile::rename(mPartPath, mFinalPath)) {
-                emit onProgressChanged(100.0f);
-                emit onDownloadCompleted();
+                mFileDownloadEvents-> onProgressChanged(100.0f);
+                mFileDownloadEvents-> onDownloadCompleted();
             } else {
-                emit onError("Download appears complete (416), but could not rename .part file.");
+                mFileDownloadEvents-> onError("Download appears complete (416), but could not rename .part file.");
             }
             cleanupReply();
             return;
@@ -192,7 +192,7 @@ void FileDownloader::startOrResume()
             mFile->close();
             mFile->open(QIODevice::WriteOnly | QIODevice::Truncate);
             mFile->close();
-            emit onError("Server does not support resume; restarting download from beginning.");
+            mFileDownloadEvents-> onError("Server does not support resume; restarting download from beginning.");
             mRetryCount = 0;
             startOrResume();
             return;
@@ -223,13 +223,13 @@ void FileDownloader::startOrResume()
         // Move .part to final.
         QFile::remove(mFinalPath); // overwrite if exists
         if (!QFile::rename(mPartPath, mFinalPath)) {
-            emit onError("Download finished but could not rename .part file.");
+            mFileDownloadEvents-> onError("Download finished but could not rename .part file.");
             cleanupReply();
             return;
         }
 
-        emit onProgressChanged(100.0f);
-        emit onDownloadCompleted();
+        mFileDownloadEvents-> onProgressChanged(100.0f);
+        mFileDownloadEvents-> onDownloadCompleted();
         cleanupReply();
     });
 }

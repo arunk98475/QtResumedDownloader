@@ -6,13 +6,10 @@
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
-    , mFilDownloader(this)
+    , mFilDownloader(this,this)
     , ui(new Ui::MainWindow)
 {
     ui->setupUi(this);
-    connect(&mFilDownloader,&FileDownloader::onDownloadCompleted,this , &MainWindow::onDownloadCompleted);
-    connect(&mFilDownloader,&FileDownloader::onProgressChanged,this , &MainWindow::onProgressChanged);
-    connect(&mFilDownloader,&FileDownloader::onError,this , &MainWindow::onError);
 
     ui->progressBar->setRange(0, 100);
     ui->progressBar->setValue(0);

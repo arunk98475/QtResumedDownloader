@@ -8,11 +8,20 @@
 #include <QPointer>
 #include <QTimer>
 
+class FileDownloadEvents
+{
+public:
+    virtual void onProgressChanged(float val)=0;
+    virtual void onDownloadCompleted()=0;
+    virtual void onError(const QString& error)=0;
+
+};
+
 class FileDownloader : public QObject
 {
     Q_OBJECT
 public:
-    explicit FileDownloader(QObject *parent = nullptr);
+    explicit FileDownloader(QObject *parent = nullptr,FileDownloadEvents * events=nullptr);
     void download(const QString& url, const QString& outPutFolder);
 
 private:
@@ -20,17 +29,12 @@ private:
     void cleanupReply();
     void scheduleRetry(const QString& reason);
     void resetStateForNewDownload();
+    FileDownloadEvents * mFileDownloadEvents;
 
     QString derivedFileName() const;
     QString targetFilePath() const;
     QString partFilePath() const;
     qint64 existingPartSize() const;
-
-signals:
-
-    void onProgressChanged(float val);
-    void onDownloadCompleted();
-    void onError(const QString& error);
 
 private:
     QNetworkAccessManager mNam;
