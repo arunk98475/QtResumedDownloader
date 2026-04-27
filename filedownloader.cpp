@@ -21,6 +21,32 @@ void FileDownloader::download(const QString& url, const QString& outPutFolder)
     startOrResume();
 }
 
+void FileDownloader::abort()
+{
+    mRetryTimer.stop();
+    mAborted = true;
+
+    cleanupReply();
+
+    if (mFile) {
+        if (mFile->isOpen())
+            mFile->close();
+        delete mFile;
+        mFile = nullptr;
+    }
+
+    if (!mPartPath.isEmpty())
+        QFile::remove(mPartPath);
+
+    mUrl.clear();
+    mOutputFolder.clear();
+    mFinalPath.clear();
+    mPartPath.clear();
+
+    if (mFileDownloadEvents)
+        mFileDownloadEvents->onError(QStringLiteral("Download aborted."));
+}
+
 void FileDownloader::resetStateForNewDownload()
 {
     cleanupReply();
@@ -29,6 +55,8 @@ void FileDownloader::resetStateForNewDownload()
         delete mFile;
         mFile = nullptr;
     }
+
+    mAborted = false;
 
     mFinalPath = targetFilePath();
     mPartPath = partFilePath();
@@ -79,6 +107,9 @@ void FileDownloader::cleanupReply()
 
 void FileDownloader::scheduleRetry(const QString& reason)
 {
+    if (mAborted)
+        return;
+
     cleanupReply();
     // Close the output file between attempts so the next retry can reopen cleanly
     // and so we don't keep a stale handle around after network errors.
@@ -97,6 +128,9 @@ void FileDownloader::scheduleRetry(const QString& reason)
 
 void FileDownloader::startOrResume()
 {
+    if (mAborted)
+        return;
+
     if (mUrl.isEmpty()) {
         mFileDownloadEvents-> onError("URL is empty.");
         return;
@@ -152,7 +186,7 @@ void FileDownloader::startOrResume()
     mReply = mNam.get(req);
 
     connect(mReply, &QNetworkReply::readyRead, this, [this]() {
-        if (!mReply || !mFile) return;
+        if (mAborted || !mReply || !mFile) return;
         const QByteArray chunk = mReply->readAll();
         if (!chunk.isEmpty()) {
             const qint64 written = mFile->write(chunk);
@@ -163,6 +197,8 @@ void FileDownloader::startOrResume()
     });
 
     connect(mReply, &QNetworkReply::downloadProgress, this, [this](qint64 received, qint64 total) {
+        if (mAborted)
+            return;
         // received/total are for the current reply; adjust with resume offset if resuming
         qint64 fullTotal = -1;
         if (total > 0) fullTotal = mResumeOffset + total;
@@ -176,12 +212,14 @@ void FileDownloader::startOrResume()
     });
 
     connect(mReply, &QNetworkReply::errorOccurred, this, [this](QNetworkReply::NetworkError) {
-        if (!mReply) return;
+        if (mAborted || !mReply)
+            return;
         scheduleRetry(mReply->errorString());
     });
 
     connect(mReply, &QNetworkReply::finished, this, [this]() {
-        if (!mReply || !mFile) return;
+        if (mAborted || !mReply || !mFile)
+            return;
 
         // Ensure last bytes are written.
         const QByteArray chunk = mReply->readAll();

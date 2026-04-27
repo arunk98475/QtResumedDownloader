@@ -23,6 +23,8 @@ class FileDownloader : public QObject
 public:
     explicit FileDownloader(QObject *parent = nullptr,FileDownloadEvents * events=nullptr);
     void download(const QString& url, const QString& outPutFolder);
+    /** Stops the active download, deletes the .part file, and cancels further retries until download() is called again. */
+    void abort();
 
 private:
     void startOrResume();
@@ -51,6 +53,7 @@ private:
     qint64 mTotalExpectedBytes = -1; // full file size if known
     int mRetryCount = 0;
     bool mTriedRestartWithoutRange = false;
+    bool mAborted = false;
 
 };
 
