@@ -16,11 +16,7 @@
   <widget class="QWidget" name="centralwidget">
    <layout class="QGridLayout" name="gridLayout">
     <item row="1" column="1">
-     <widget class="QLineEdit" name="lineEditDownloadLocation">
-      <property name="text">
-       <string>D:\KTS_InfoTech\KtsInfomate\InfoMatePlayer\QtResumedDownloader\Downloads</string>
-      </property>
-     </widget>
+     <widget class="QLineEdit" name="lineEditDownloadLocation"/>
     </item>
     <item row="2" column="2">
      <widget class="QPushButton" name="pushBtnDownload">
@@ -37,11 +33,7 @@
      </widget>
     </item>
     <item row="0" column="1">
-     <widget class="QLineEdit" name="lineEditFileUrl">
-      <property name="text">
-       <string>http://infomatecms.virtualtutor.co.in//uploads/Layout/11_06_25_22_59_14_68.zip</string>
-      </property>
-     </widget>
+     <widget class="QLineEdit" name="lineEditFileUrl"/>
     </item>
     <item row="2" column="1">
      <widget class="QProgressBar" name="progressBar">
